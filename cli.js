@@ -11,6 +11,11 @@ const SERVER_NAME_DEFAULT = "tiger_den";
 const MCP_REMOTE_PKG = "mcp-remote";
 const MCP_URL_DEFAULT = "https://tiger-den.vercel.app/api/mcp/mcp";
 
+// Current Claude Desktop config filename (per your note)
+const CONFIG_FILENAME = "claude_desktop_config.json";
+// Optional legacy filename (older docs / installs)
+const LEGACY_FILENAME = "settings.json";
+
 function banner() {
   const lines = [
     "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓",
@@ -46,16 +51,41 @@ function stamp() {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
 }
 
-function defaultSettingsPath() {
+function defaultConfigPath() {
   if (process.platform === "darwin") {
-    return path.join(os.homedir(), "Library", "Application Support", "Claude", "settings.json");
+    return path.join(os.homedir(), "Library", "Application Support", "Claude", CONFIG_FILENAME);
   }
   if (process.platform === "win32") {
     const appdata = process.env.APPDATA;
-    if (!appdata) throw new Error("APPDATA is not set; cannot locate Claude settings.json on Windows.");
-    return path.join(appdata, "Claude", "settings.json");
+    if (!appdata) throw new Error("APPDATA is not set; cannot locate Claude Desktop config on Windows.");
+    return path.join(appdata, "Claude", CONFIG_FILENAME);
   }
-  return path.join(os.homedir(), ".config", "Claude", "settings.json");
+  return path.join(os.homedir(), ".config", "Claude", CONFIG_FILENAME);
+}
+
+function legacyConfigPath() {
+  if (process.platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "Claude", LEGACY_FILENAME);
+  }
+  if (process.platform === "win32") {
+    const appdata = process.env.APPDATA || "";
+    return path.join(appdata, "Claude", LEGACY_FILENAME);
+  }
+  return path.join(os.homedir(), ".config", "Claude", LEGACY_FILENAME);
+}
+
+/**
+ * Prefer current config filename, but fall back to legacy filename if it exists.
+ * If neither exists, return the current default path (so we create it there).
+ */
+function resolveDefaultConfigPathWithFallback() {
+  const primary = defaultConfigPath();
+  if (fs.existsSync(primary)) return primary;
+
+  const legacy = legacyConfigPath();
+  if (legacy && fs.existsSync(legacy)) return legacy;
+
+  return primary;
 }
 
 function ensureParentDir(filePath) {
@@ -70,7 +100,7 @@ function readJson(filePath) {
     return JSON.parse(raw);
   } catch (e) {
     throw new Error(
-      `Invalid JSON in Claude settings file:\n${filePath}\n\nFix the JSON and re-run.\n\nOriginal error: ${e.message}`
+      `Invalid JSON in Claude Desktop config file:\n${filePath}\n\nFix the JSON and re-run.\n\nOriginal error: ${e.message}`
     );
   }
 }
@@ -125,11 +155,15 @@ Options:
   --token <td_...>     Tiger Den API key (optional; prompts if omitted)
   --url <https://...>  MCP endpoint (default: ${MCP_URL_DEFAULT})
   --name <tiger_den>   MCP server name in Claude (default: ${SERVER_NAME_DEFAULT})
-  --config <path>      Path to Claude settings.json (optional)
+  --config <path>      Path to Claude Desktop config file (optional)
   --force              Overwrite existing entry if it differs
-  -y, --yes            Non-interactive; if no --token and no config found, uses defaults with placeholder token
+  -y, --yes            Non-interactive; if no --token and config not found, uses defaults with placeholder token
   --doctor             Check prerequisites and show what will be changed, without writing
   --quiet              Less output (still shows errors/warnings)
+
+Notes:
+  Default config filename: ${CONFIG_FILENAME}
+  Legacy fallback (if it exists): ${LEGACY_FILENAME}
 `);
       process.exit(0);
     }
@@ -162,57 +196,70 @@ function tokenWarning(token) {
   return null;
 }
 
-async function settingsPathMenu(defPath) {
-  console.log(`Claude settings.json was not found at the default location:\n  ${defPath}\n`);
+async function configPathMenu(primaryPath, legacyPathMaybe) {
+  console.log(`Claude Desktop config file was not found at the default location:\n  ${primaryPath}\n`);
+
+  if (legacyPathMaybe) {
+    console.log(`(Also checked legacy filename, not found):\n  ${legacyPathMaybe}\n`);
+  }
+
   console.log(`Choose an option:`);
-  console.log(`  1) Create settings.json at the default path`);
-  console.log(`  2) Enter a custom path to settings.json`);
+  console.log(`  1) Create ${CONFIG_FILENAME} at the default path`);
+  console.log(`  2) Enter a custom path to an existing config file`);
   console.log(`  3) Exit (I'll print help to find it)`);
+
   const choice = await ask("Enter 1, 2, or 3: ");
 
-  if (choice === "1" || choice === "") return { action: "useDefault", value: defPath };
+  if (choice === "1" || choice === "") return { action: "useDefault", value: primaryPath };
   if (choice === "2") return { action: "custom", value: null };
   if (choice === "3") return { action: "exit", value: null };
   return { action: "invalid", value: null };
 }
 
-function printFindHelp(defPath) {
-  console.log(`\nHow to find Claude Desktop settings.json:\n`);
+function printFindHelp(primaryPath) {
+  console.log(`\nHow to find Claude Desktop config (${CONFIG_FILENAME}):\n`);
+
   if (process.platform === "darwin") {
     console.log(`macOS:`);
     console.log(`  Default location is usually:`);
-    console.log(`    ${defPath}`);
+    console.log(`    ${primaryPath}`);
     console.log(`  In Finder: Go → Go to Folder… and paste:`);
     console.log(`    ~/Library/Application Support/Claude/\n`);
   } else if (process.platform === "win32") {
     console.log(`Windows:`);
     console.log(`  Default location is usually:`);
-    console.log(`    ${defPath}`);
+    console.log(`    ${primaryPath}`);
     console.log(`  In Explorer: paste this into the address bar:`);
     console.log(`    %APPDATA%\\Claude\\\n`);
   } else {
     console.log(`Linux:`);
     console.log(`  Default location is usually:`);
-    console.log(`    ${defPath}\n`);
+    console.log(`    ${primaryPath}\n`);
   }
+
   console.log(`You can re-run this installer with:`);
-  console.log(`  --config "<full path to settings.json>"\n`);
+  console.log(`  --config "<full path to ${CONFIG_FILENAME}>"\n`);
 }
 
-async function resolveSettingsPath(args) {
+async function resolveConfigPath(args) {
   if (args.config) return args.config;
 
-  const def = defaultSettingsPath();
-  if (fs.existsSync(def)) return def;
-  if (args.yes) return def;
+  const primary = defaultConfigPath();
+  const legacy = legacyConfigPath();
+
+  // Prefer current, but fall back if legacy exists
+  const detected = resolveDefaultConfigPathWithFallback();
+  if (fs.existsSync(detected)) return detected;
+
+  if (args.yes) return primary;
 
   while (true) {
-    const sel = await settingsPathMenu(def);
+    const sel = await configPathMenu(primary, legacy);
 
-    if (sel.action === "useDefault") return def;
+    if (sel.action === "useDefault") return primary;
 
     if (sel.action === "custom") {
-      const custom = await ask("Paste the full path to settings.json: ");
+      const custom = await ask("Paste the full path to the Claude Desktop config file: ");
       if (!custom) {
         console.log("No path provided. Returning to menu.\n");
         continue;
@@ -221,7 +268,7 @@ async function resolveSettingsPath(args) {
     }
 
     if (sel.action === "exit") {
-      printFindHelp(def);
+      printFindHelp(primary);
       process.exit(0);
     }
 
@@ -238,8 +285,8 @@ function buildServerEntry({ url, token }) {
   };
 }
 
-function openFolderHint(settingsPath) {
-  const dir = path.dirname(settingsPath);
+function openFolderHint(configPath) {
+  const dir = path.dirname(configPath);
   if (process.platform === "darwin") return `open "${dir}"`;
   if (process.platform === "win32") return `explorer "${dir}"`;
   return dir;
@@ -255,8 +302,8 @@ function isClaudeRunning() {
     }
 
     if (process.platform === "win32") {
-      // tasklist output includes process names; match common patterns
       const out = execSync("tasklist", { stdio: ["ignore", "pipe", "ignore"] }).toString().toLowerCase();
+      // Best-effort substring match. Safe if imperfect (only affects messaging).
       return out.includes("claude");
     }
 
@@ -270,20 +317,22 @@ function isClaudeRunning() {
   return false;
 }
 
-function checkNodeAndNpx() {
+function checkNode() {
   const okNode = !!process.version;
-  // Avoid spawning PATH checks—keep it simple and actionable.
   return { okNode, nodeVersion: process.version, note: "If npx fails, ensure Node.js is installed and on PATH." };
 }
 
 async function doctorReport(args) {
   const token = await resolveToken(args);
   const tokenMsg = tokenWarning(token);
-  const def = defaultSettingsPath();
-  const settingsPath = args.config || def;
 
-  const env = checkNodeAndNpx();
+  const primary = defaultConfigPath();
+  const legacy = legacyConfigPath();
+  const configPath = args.config || resolveDefaultConfigPathWithFallback();
+
+  const env = checkNode();
   const entry = buildServerEntry({ url: args.url, token });
+  const running = isClaudeRunning();
 
   console.log("\n🩺 Doctor report\n");
 
@@ -292,23 +341,26 @@ async function doctorReport(args) {
   console.log(`  Node: ${env.okNode ? "OK" : "Missing"} (${env.nodeVersion || "unknown"})`);
   console.log(`  Note: ${env.note}`);
 
-  console.log("\nTarget settings file:");
-  console.log(`  ${settingsPath}`);
-  console.log(`  Exists: ${fs.existsSync(settingsPath) ? "Yes" : "No (will be created)"}`);
+  console.log("\nConfig paths checked:");
+  console.log(`  Primary: ${primary} ${fs.existsSync(primary) ? "(exists)" : "(not found)"}`);
+  console.log(`  Legacy : ${legacy} ${fs.existsSync(legacy) ? "(exists)" : "(not found)"}`);
+
+  console.log("\nTarget config file:");
+  console.log(`  ${configPath}`);
+  console.log(`  Exists: ${fs.existsSync(configPath) ? "Yes" : "No (will be created at primary unless you use --config)"}`);
 
   console.log("\nPlanned MCP server entry:");
   console.log(`  Name: ${args.name}`);
   console.log(`  Command: ${entry.command}`);
   console.log(`  Args: ${JSON.stringify(entry.args)}`);
 
-  const running = isClaudeRunning();
   console.log(`\nClaude Desktop running: ${running ? "Yes" : "No"}`);
 
   if (tokenMsg) console.log(`\n⚠️  Token note: ${tokenMsg}`);
   else if (!token) console.log(`\n⚠️  Token note: No token provided; placeholder will be written.`);
   else console.log(`\n✅ Token looks plausible (starts with td_).`);
 
-  console.log(`\nTip: open the settings folder with:\n  ${openFolderHint(settingsPath)}\n`);
+  console.log(`\nTip: open the config folder with:\n  ${openFolderHint(configPath)}\n`);
 }
 
 async function main() {
@@ -328,23 +380,23 @@ async function main() {
   const tokenMsg = tokenWarning(token);
   if (tokenMsg) logWarn(tokenMsg);
 
-  if (!args.quiet) logStep(2, "Locate Claude Desktop settings.json");
-  const settingsPath = await resolveSettingsPath(args);
-  if (!args.quiet) logInfo(`Using: ${settingsPath}`);
+  if (!args.quiet) logStep(2, "Locate Claude Desktop config file");
+  const configPath = await resolveConfigPath(args);
+  if (!args.quiet) logInfo(`Using: ${configPath}`);
 
-  ensureParentDir(settingsPath);
+  ensureParentDir(configPath);
 
   if (!args.quiet) logStep(3, "Prepare MCP configuration");
   const entry = buildServerEntry({ url: args.url, token });
 
-  const current = readJson(settingsPath);
+  const current = readJson(configPath);
   const existingEntry = current?.mcpServers?.[args.name];
 
   if (existingEntry && JSON.stringify(existingEntry) !== JSON.stringify(entry) && !args.force) {
     logErr(`A server named "${args.name}" already exists and differs.`);
-    console.error(`\nFile: ${settingsPath}\n`);
+    console.error(`\nFile: ${configPath}\n`);
     console.error(`Re-run with --force to overwrite, or choose a different name with --name.\n`);
-    console.error(`Tip: open the settings folder with:\n  ${openFolderHint(settingsPath)}\n`);
+    console.error(`Tip: open the config folder with:\n  ${openFolderHint(configPath)}\n`);
     process.exit(2);
   }
 
@@ -362,8 +414,8 @@ async function main() {
 
   if (currentStr === mergedStr) {
     logOk("No changes needed (already configured).");
-    console.log(`   Path: ${settingsPath}`);
-    console.log(`\n📂 Helpful:\n  ${openFolderHint(settingsPath)}`);
+    console.log(`   Path: ${configPath}`);
+    console.log(`\n📂 Helpful:\n  ${openFolderHint(configPath)}`);
 
     console.log(`\nNext steps:`);
     const running = isClaudeRunning();
@@ -378,21 +430,21 @@ async function main() {
   }
   // --- End idempotent no-op detection ---
 
-  if (!args.quiet) logStep(4, "Write settings.json (with backup)");
-  const bak = backup(settingsPath);
-  fs.writeFileSync(settingsPath, mergedStr, "utf8");
+  if (!args.quiet) logStep(4, "Write config (with backup)");
+  const bak = backup(configPath);
+  fs.writeFileSync(configPath, mergedStr, "utf8");
 
-  logOk("Updated Claude settings.json");
-  console.log(`   Path: ${settingsPath}`);
+  logOk("Updated Claude Desktop config file");
+  console.log(`   Path: ${configPath}`);
   if (bak) console.log(`🧾 Backup: ${bak}`);
   console.log(`🔧 Added/updated MCP server: ${args.name}`);
   console.log(`   Command: ${entry.command}`);
 
-  console.log(`\n📂 Helpful:\n  ${openFolderHint(settingsPath)}`);
+  console.log(`\n📂 Helpful:\n  ${openFolderHint(configPath)}`);
 
   if (!token) {
     logWarn("Placeholder token written.");
-    console.log(`   Edit this value in settings.json: Authorization: Bearer td_your_key_here`);
+    console.log(`   Edit this value in the config file: Authorization: Bearer td_your_key_here`);
   }
 
   console.log(`\nNext steps:`);

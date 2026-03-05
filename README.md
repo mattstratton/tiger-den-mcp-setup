@@ -30,3 +30,10 @@ To verify your setup without modifying files:
 ```bash
 npx -y @mattstratton/tiger-den-mcp-setup --doctor
 ```
+
+## Releasing Updated Versions (developer)
+
+```bash
+npm version patch
+npm publish
+```
