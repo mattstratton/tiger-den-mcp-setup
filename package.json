@@ -1,0 +1,32 @@
+{
+  "name": "@mattstratton/tiger-den-mcp-setup",
+  "version": "0.1.0",
+  "description": "CLI installer to configure the Tiger Den MCP server in Claude Desktop",
+  "bin": {
+    "tiger-den-mcp-setup": "./cli.js"
+  },
+  "type": "commonjs",
+  "files": [
+    "cli.js",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "claude-desktop",
+    "tiger-den",
+    "mcp-server"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mattstratton/tiger-den-mcp-setup.git"
+  },
+  "homepage": "https://github.com/mattstratton/tiger-den-mcp-setup",
+  "bugs": {
+    "url": "https://github.com/mattstratton/tiger-den-mcp-setup/issues"
+  }
+}
