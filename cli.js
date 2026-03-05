@@ -11,10 +11,23 @@ const SERVER_NAME_DEFAULT = "tiger_den";
 const MCP_REMOTE_PKG = "mcp-remote";
 const MCP_URL_DEFAULT = "https://tiger-den.vercel.app/api/mcp/mcp";
 
-// Current Claude Desktop config filename (per your note)
+// Current Claude Desktop config filename
 const CONFIG_FILENAME = "claude_desktop_config.json";
 // Optional legacy filename (older docs / installs)
 const LEGACY_FILENAME = "settings.json";
+
+// Version: prefer package.json version if available, else fallback
+const FALLBACK_VERSION = "0.1.0";
+function getVersion() {
+  try {
+    const pkgPath = path.join(__dirname, "package.json");
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    if (pkg && pkg.version) return String(pkg.version);
+  } catch {
+    // ignore
+  }
+  return FALLBACK_VERSION;
+}
 
 function banner() {
   const lines = [
@@ -28,19 +41,15 @@ function banner() {
 function logStep(n, msg) {
   console.log(`\n▶ Step ${n}: ${msg}`);
 }
-
 function logInfo(msg) {
   console.log(`   ${msg}`);
 }
-
 function logOk(msg) {
   console.log(`✅ ${msg}`);
 }
-
 function logWarn(msg) {
   console.log(`⚠️  ${msg}`);
 }
-
 function logErr(msg) {
   console.error(`❌ ${msg}`);
 }
@@ -124,6 +133,16 @@ function deepMerge(a, b) {
   return out;
 }
 
+// Stable stringify (sorted keys) to avoid false diffs due to key order
+function stableStringify(value) {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+
+  const keys = Object.keys(value).sort();
+  const props = keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`);
+  return `{${props.join(",")}}`;
+}
+
 function parseArgs(argv) {
   const args = {
     config: null,
@@ -134,6 +153,7 @@ function parseArgs(argv) {
     yes: false, // non-interactive
     doctor: false,
     quiet: false,
+    version: false,
   };
 
   for (let i = 2; i < argv.length; i++) {
@@ -146,6 +166,7 @@ function parseArgs(argv) {
     else if (a === "-y" || a === "--yes") args.yes = true;
     else if (a === "--doctor") args.doctor = true;
     else if (a === "--quiet") args.quiet = true;
+    else if (a === "--version" || a === "-V") args.version = true;
     else if (a === "-h" || a === "--help") {
       console.log(`
 Usage:
@@ -160,6 +181,7 @@ Options:
   -y, --yes            Non-interactive; if no --token and config not found, uses defaults with placeholder token
   --doctor             Check prerequisites and show what will be changed, without writing
   --quiet              Less output (still shows errors/warnings)
+  --version, -V        Print version and exit
 
 Notes:
   Default config filename: ${CONFIG_FILENAME}
@@ -181,17 +203,26 @@ function ask(question) {
   );
 }
 
-async function resolveToken(args) {
-  if (args.token) return args.token.trim();
-  if (args.yes) return null; // placeholder
-  const t = await ask("Tiger Den API key (starts with td_). Press Enter to use placeholder: ");
-  return t || null;
-}
-
 function tokenWarning(token) {
   if (!token) return null;
   if (!token.startsWith("td_")) {
     return `Token does not start with "td_". That might be fine, but double-check you pasted the right value.`;
+  }
+  return null;
+}
+
+function extractBearerTokenFromEntry(entry) {
+  // Looks for: "Authorization: Bearer <token>" within args strings
+  if (!entry || typeof entry !== "object") return null;
+  if (!Array.isArray(entry.args)) return null;
+
+  for (const a of entry.args) {
+    if (typeof a !== "string") continue;
+    const prefix = "Authorization: Bearer ";
+    if (a.startsWith(prefix)) {
+      const token = a.slice(prefix.length).trim();
+      return token || null;
+    }
   }
   return null;
 }
@@ -247,7 +278,6 @@ async function resolveConfigPath(args) {
   const primary = defaultConfigPath();
   const legacy = legacyConfigPath();
 
-  // Prefer current, but fall back if legacy exists
   const detected = resolveDefaultConfigPathWithFallback();
   if (fs.existsSync(detected)) return detected;
 
@@ -303,7 +333,6 @@ function isClaudeRunning() {
 
     if (process.platform === "win32") {
       const out = execSync("tasklist", { stdio: ["ignore", "pipe", "ignore"] }).toString().toLowerCase();
-      // Best-effort substring match. Safe if imperfect (only affects messaging).
       return out.includes("claude");
     }
 
@@ -323,16 +352,23 @@ function checkNode() {
 }
 
 async function doctorReport(args) {
-  const token = await resolveToken(args);
-  const tokenMsg = tokenWarning(token);
-
   const primary = defaultConfigPath();
   const legacy = legacyConfigPath();
   const configPath = args.config || resolveDefaultConfigPathWithFallback();
 
   const env = checkNode();
-  const entry = buildServerEntry({ url: args.url, token });
   const running = isClaudeRunning();
+
+  const current = readJson(configPath);
+  const existingEntry = current?.mcpServers?.[args.name];
+  const existingToken = extractBearerTokenFromEntry(existingEntry);
+
+  // Determine token used for planned entry in doctor mode:
+  //  - args.token wins
+  //  - else if existing token exists, we'd reuse it by default
+  //  - else placeholder
+  const plannedToken = args.token || existingToken || null;
+  const entry = buildServerEntry({ url: args.url, token: plannedToken });
 
   console.log("\n🩺 Doctor report\n");
 
@@ -349,6 +385,10 @@ async function doctorReport(args) {
   console.log(`  ${configPath}`);
   console.log(`  Exists: ${fs.existsSync(configPath) ? "Yes" : "No (will be created at primary unless you use --config)"}`);
 
+  console.log("\nExisting server entry:");
+  console.log(`  Present: ${existingEntry ? "Yes" : "No"}`);
+  console.log(`  Token found: ${existingToken ? "Yes (will reuse by default)" : "No"}`);
+
   console.log("\nPlanned MCP server entry:");
   console.log(`  Name: ${args.name}`);
   console.log(`  Command: ${entry.command}`);
@@ -356,15 +396,33 @@ async function doctorReport(args) {
 
   console.log(`\nClaude Desktop running: ${running ? "Yes" : "No"}`);
 
-  if (tokenMsg) console.log(`\n⚠️  Token note: ${tokenMsg}`);
-  else if (!token) console.log(`\n⚠️  Token note: No token provided; placeholder will be written.`);
-  else console.log(`\n✅ Token looks plausible (starts with td_).`);
-
   console.log(`\nTip: open the config folder with:\n  ${openFolderHint(configPath)}\n`);
+}
+
+async function resolveTokenWithReuse(args, existingToken) {
+  // If --token provided, always use it.
+  if (args.token) return args.token.trim();
+
+  // Non-interactive: reuse existing token if present; otherwise placeholder
+  if (args.yes) return existingToken || null;
+
+  // Interactive prompt:
+  if (existingToken) {
+    const t = await ask("Tiger Den API key: Press Enter to reuse existing token, or paste a new one: ");
+    return t ? t : existingToken;
+  }
+
+  const t = await ask("Tiger Den API key (starts with td_). Press Enter to use placeholder: ");
+  return t || null;
 }
 
 async function main() {
   const args = parseArgs(process.argv);
+
+  if (args.version) {
+    console.log(`tiger-den-mcp-setup v${getVersion()}`);
+    return;
+  }
 
   if (!args.quiet) banner();
 
@@ -375,24 +433,26 @@ async function main() {
     return;
   }
 
-  if (!args.quiet) logStep(1, "Get your Tiger Den API key");
-  const token = await resolveToken(args);
-  const tokenMsg = tokenWarning(token);
-  if (tokenMsg) logWarn(tokenMsg);
-
-  if (!args.quiet) logStep(2, "Locate Claude Desktop config file");
+  if (!args.quiet) logStep(1, "Locate Claude Desktop config file");
   const configPath = await resolveConfigPath(args);
   if (!args.quiet) logInfo(`Using: ${configPath}`);
 
   ensureParentDir(configPath);
 
+  const current = readJson(configPath);
+  const existingEntry = current?.mcpServers?.[args.name];
+  const existingToken = extractBearerTokenFromEntry(existingEntry);
+
+  if (!args.quiet) logStep(2, "Get your Tiger Den API key");
+  const token = await resolveTokenWithReuse(args, existingToken);
+  const tokenMsg = tokenWarning(token);
+  if (tokenMsg) logWarn(tokenMsg);
+
   if (!args.quiet) logStep(3, "Prepare MCP configuration");
   const entry = buildServerEntry({ url: args.url, token });
 
-  const current = readJson(configPath);
-  const existingEntry = current?.mcpServers?.[args.name];
-
-  if (existingEntry && JSON.stringify(existingEntry) !== JSON.stringify(entry) && !args.force) {
+  // Compare existing entry vs desired entry (stable) to avoid false diffs due to key order
+  if (existingEntry && stableStringify(existingEntry) !== stableStringify(entry) && !args.force) {
     logErr(`A server named "${args.name}" already exists and differs.`);
     console.error(`\nFile: ${configPath}\n`);
     console.error(`Re-run with --force to overwrite, or choose a different name with --name.\n`);
@@ -417,15 +477,14 @@ async function main() {
     console.log(`   Path: ${configPath}`);
     console.log(`\n📂 Helpful:\n  ${openFolderHint(configPath)}`);
 
-    console.log(`\nNext steps:`);
-    const running = isClaudeRunning();
-    if (running) {
-      logWarn("Claude Desktop appears to be running.");
-      console.log(`   Please fully quit and restart Claude Desktop to load the MCP server.`);
+    // No-op UX: don't tell them to restart
+    console.log(`\nYou're already configured! 🎉`);
+    console.log(`Tiger Den MCP is already installed in Claude Desktop.`);
+    if (!isClaudeRunning()) {
+      console.log(`\nStart Claude Desktop to begin using it.`);
     } else {
-      console.log(`  Start Claude Desktop to load the MCP server.`);
+      console.log(`\nYou should already see "${args.name}" available in Claude.`);
     }
-    console.log(`  Confirm "${args.name}" appears as an MCP server.`);
     return;
   }
   // --- End idempotent no-op detection ---
@@ -447,6 +506,7 @@ async function main() {
     console.log(`   Edit this value in the config file: Authorization: Bearer td_your_key_here`);
   }
 
+  // Only suggest restart when we actually wrote changes
   console.log(`\nNext steps:`);
   const running = isClaudeRunning();
   if (running) {
