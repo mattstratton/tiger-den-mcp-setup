@@ -1,6 +1,6 @@
 {
   "name": "@mattstratton/tiger-den-mcp-setup",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "CLI installer to configure the Tiger Den MCP server in Claude Desktop",
   "bin": {
     "tiger-den-mcp-setup": "./cli.js"
