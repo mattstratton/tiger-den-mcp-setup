@@ -9,7 +9,7 @@ const { execSync } = require("child_process");
 
 const SERVER_NAME_DEFAULT = "tiger_den";
 const MCP_REMOTE_PKG = "mcp-remote";
-const MCP_URL_DEFAULT = "https://tiger-den.vercel.app/api/mcp/mcp";
+const MCP_URL_DEFAULT = "https://den.tigerdata.com/api/mcp/mcp";
 
 // Current Claude Desktop config filename
 const CONFIG_FILENAME = "claude_desktop_config.json";
