@@ -3,7 +3,7 @@
   "version": "0.1.3",
   "description": "CLI installer to configure the Tiger Den MCP server in Claude Desktop",
   "bin": {
-    "tiger-den-mcp-setup": "./cli.js"
+    "tiger-den-mcp-setup": "cli.js"
   },
   "type": "commonjs",
   "files": [
